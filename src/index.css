@@ -1,0 +1,10 @@
+@import "tailwindcss";
+
+/* Verhindert das "Gummiband"-Überscrollen am Rand auf iPad/Safari und sorgt für
+   eine volle, feste Seitenhöhe als Basis für die App-eigenen Scrollbereiche. */
+html,
+body,
+#root {
+  height: 100%;
+  overscroll-behavior: none;
+}
