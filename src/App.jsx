@@ -4,9 +4,9 @@ import mammoth from "mammoth";
 import { Document, Packer, Paragraph, TextRun, ImageRun, HeadingLevel } from "docx";
 import { useEditor, EditorContent, ReactNodeViewRenderer, NodeViewWrapper } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
-import TiptapImage from "@tiptap/extension-image";
-import TextStyle from "@tiptap/extension-text-style";
-import Color from "@tiptap/extension-color";
+import { Image as TiptapImage } from "@tiptap/extension-image";
+import { TextStyle } from "@tiptap/extension-text-style";
+import { Color } from "@tiptap/extension-color";
 import Placeholder from "@tiptap/extension-placeholder";
 // Word-Import/-Export für die Methodenbeschreibung ist (noch) nicht enthalten – die dafür
 // nötigen Zusatzbibliotheken laufen in dieser Vorschau-Umgebung nicht. Bei Bedarf im eigenen
