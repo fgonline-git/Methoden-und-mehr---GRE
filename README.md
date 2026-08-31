@@ -66,10 +66,17 @@ aktualisiert sich automatisch.
 
 - **Daten sind nicht dauerhaft gespeichert.** Alles läuft im Arbeitsspeicher des
   Browsers – ein Neuladen der Seite setzt auf den Ausgangszustand zurück (bzw. auf
-  den unten beschriebenen eingebetteten Testdatensatz).
-- **Word-Import/-Export für Methodenbeschreibungen ist noch nicht enthalten.**
-  Technisch möglich (Bibliotheken `mammoth` für Import, `docx` für Export), aber
-  bisher nicht eingebaut.
+  den unten beschriebenen eingebetteten Testdatensatz). Das gilt auch für
+  hochgeladene Materialien – für sehr große Dateien nicht geeignet.
+- **Word-Import/-Export für Methodenbeschreibungen** – im Bearbeiten-Fenster einer
+  Methodenbeschreibung: "Word importieren" liest ein .docx (inkl. Bilder) ein,
+  "Als Word exportieren" erzeugt aus dem aktuellen Inhalt eine echte .docx-Datei.
+  Der Editor selbst basiert auf [Tiptap](https://tiptap.dev) (kostenloser,
+  quelloffener Kern) – Bilder lassen sich per Ecke ziehen in der Größe ändern und
+  im Text verschieben.
+- **Bearbeitung bestehender Methoden**: Name, Jahrgangsstufen, empfohlene Fächer und
+  Halbjahr lassen sich in der Methoden-Verwaltung direkt ändern; Materialien
+  (Arbeitsblätter etc.) lassen sich hochladen und wieder entfernen.
 - **Eingebetteter Testdatensatz:** `src/App.jsx` enthält aktuell testweise einen
   kompletten Untis-CSV-Export als Text im Code (`STANDARD_UNTIS_EXPORT`), der beim
   Start automatisch geladen wird. Das ist bewusst nur eine Übergangslösung für die

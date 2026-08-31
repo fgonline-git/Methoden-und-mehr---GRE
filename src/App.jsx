@@ -2,6 +2,12 @@ import { useState, useRef, useEffect } from "react";
 import Papa from "papaparse";
 import mammoth from "mammoth";
 import { Document, Packer, Paragraph, TextRun, ImageRun, HeadingLevel } from "docx";
+import { useEditor, EditorContent, ReactNodeViewRenderer, NodeViewWrapper } from "@tiptap/react";
+import StarterKit from "@tiptap/starter-kit";
+import TiptapImage from "@tiptap/extension-image";
+import TextStyle from "@tiptap/extension-text-style";
+import Color from "@tiptap/extension-color";
+import Placeholder from "@tiptap/extension-placeholder";
 // Word-Import/-Export für die Methodenbeschreibung ist (noch) nicht enthalten – die dafür
 // nötigen Zusatzbibliotheken laufen in dieser Vorschau-Umgebung nicht. Bei Bedarf im eigenen
 // Projekt ergänzbar (siehe frühere Chat-Nachrichten für den genauen Code).
@@ -33,8 +39,7 @@ const FONTS = `
 .mc-display{font-family:'Space Grotesk',sans-serif;}
 .mc-body{font-family:'Inter',sans-serif;}
 .mc-mono{font-family:'IBM Plex Mono',monospace;}
-.rt-editable:empty:before{content:attr(data-placeholder);color:#B4AF9F;}
-.rt-editable:focus{outline:2px solid #C98A2B33;}
+.rt-content:focus{outline:2px solid #C98A2B33;}
 .rt-content ul{list-style:disc;margin-left:1.1em;}
 .rt-content ol{list-style:decimal;margin-left:1.1em;}
 .rt-content strong{font-weight:600;}
@@ -42,8 +47,8 @@ const FONTS = `
 .rt-content h3{font-family:'Space Grotesk',sans-serif;font-size:1.05em;font-weight:600;margin:0.4em 0 0.25em;}
 .rt-content img{max-width:100%;border-radius:6px;margin:0.4em 0;}
 .rt-content h1,.rt-content h4{font-family:'Space Grotesk',sans-serif;font-weight:600;margin:0.4em 0 0.25em;}
-.rt-editable img{resize:both;overflow:hidden;cursor:move;display:inline-block;}
 .rt-content p{margin:0 0 0.4em;}
+.rt-content p.is-editor-empty:first-child:before{content:attr(data-placeholder);color:#B4AF9F;float:left;height:0;pointer-events:none;}
 `;
 
 const JAHRGAENGE = [5, 6, 7, 8, 9, 10];
@@ -746,6 +751,67 @@ function StatusDot({ status }) {
   return <span className="inline-block rounded-full" style={{ width: 9, height: 9, background: color }} />;
 }
 
+// ---------- Größenveränderbares Bild für den Tiptap-Editor ----------
+// Normale Tiptap-Bilder kennen keine Breite/Höhe. Diese Erweiterung ergänzt beides als
+// Attribute (werden auch mit exportiert/gespeichert) und rendert das Bild über eine eigene
+// Komponente, die per ResizeObserver erkennt, wenn jemand am nativen Ziehpunkt unten rechts
+// die Größe ändert, und das Ergebnis zurück ins Dokumentmodell schreibt – sonst würde die neue
+// Größe zwar angezeigt, aber beim Speichern/Exportieren wieder verloren gehen.
+function BildNodeAnsicht({ node, updateAttributes }) {
+  const bildRef = useRef(null);
+
+  useEffect(() => {
+    const el = bildRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const beobachter = new ResizeObserver((eintraege) => {
+      for (const eintrag of eintraege) {
+        const breite = Math.round(eintrag.contentRect.width);
+        const hoehe = Math.round(eintrag.contentRect.height);
+        if (breite > 0 && hoehe > 0 && (breite !== node.attrs.width || hoehe !== node.attrs.height)) {
+          updateAttributes({ width: breite, height: hoehe });
+        }
+      }
+    });
+    beobachter.observe(el);
+    return () => beobachter.disconnect();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  return (
+    <NodeViewWrapper as="span" style={{ display: "inline-block", verticalAlign: "bottom" }}>
+      <img
+        ref={bildRef}
+        src={node.attrs.src}
+        alt={node.attrs.alt || ""}
+        style={{
+          width: node.attrs.width ? `${node.attrs.width}px` : "auto",
+          height: node.attrs.height ? `${node.attrs.height}px` : "auto",
+          resize: "both",
+          overflow: "hidden",
+          cursor: "move",
+          display: "block",
+          maxWidth: "100%",
+          borderRadius: 6,
+        }}
+        draggable
+      />
+    </NodeViewWrapper>
+  );
+}
+
+const GroessenveraenderbaresBild = TiptapImage.extend({
+  addAttributes() {
+    return {
+      ...this.parent(),
+      width: { default: null, renderHTML: (attrs) => (attrs.width ? { width: attrs.width } : {}) },
+      height: { default: null, renderHTML: (attrs) => (attrs.height ? { height: attrs.height } : {}) },
+    };
+  },
+  addNodeView() {
+    return ReactNodeViewRenderer(BildNodeAnsicht);
+  },
+});
+
 // ---------- Word-Export der Methodenbeschreibung (HTML -> .docx) ----------
 function farbeZuHex(css) {
   if (!css) return undefined;
@@ -845,29 +911,34 @@ function Beschreibungsfeld({ value }) {
 // Textfarbe, Bilder. Nutzt document.execCommand (bleibt dadurch auch in dieser
 // Vorschau nutzbar) und wird über ein Bearbeiten-Symbol in der Methoden-Übersicht geöffnet.
 function BeschreibungBearbeitenModal({ title, value, onChange, onClose }) {
-  const ref = useRef(null);
   const bildInputRef = useRef(null);
   const wordImportRef = useRef(null);
   const [exportLaeuft, setExportLaeuft] = useState(false);
 
-  // Inhalt nur einmal beim Öffnen in den editierbaren Bereich schreiben – NICHT bei jeder
-  // Änderung, sonst würde jeder Tastendruck (über onChange -> Zustandsänderung -> Neu-Rendern)
-  // den kompletten Inhalt ersetzen und den Cursor an den Anfang zurückspringen lassen.
-  useEffect(() => {
-    if (ref.current) {
-      ref.current.innerHTML = value || "";
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  const editor = useEditor(
+    {
+      extensions: [
+        StarterKit.configure({ heading: { levels: [2, 3] } }),
+        GroessenveraenderbaresBild,
+        TextStyle,
+        Color,
+        Placeholder.configure({ placeholder: "Beschreibung der Methode…" }),
+      ],
+      content: value || "",
+      onUpdate: ({ editor }) => onChange(editor.getHTML()),
+      editorProps: {
+        attributes: {
+          class: "rt-content text-sm rounded border px-4 py-4 focus:outline-none",
+        },
+      },
+    },
+    // Leeres deps-Array: Der Editor wird nur einmal beim Öffnen mit "value" erzeugt und danach
+    // nicht erneut synchronisiert – sonst würde jede Änderung (die ja über onChange den Zustand
+    // weiter oben aktualisiert) den Editor zurücksetzen und den Cursor springen lassen.
+    []
+  );
 
-  const format = (cmd, arg) => {
-    if (!ref.current) return;
-    ref.current.focus();
-    document.execCommand(cmd, false, arg);
-    onChange(ref.current.innerHTML);
-  };
-
-  const toolbarBtn = (label, title, onClick, style) => (
+  const toolbarBtn = (label, title, onClick, aktiv, style) => (
     <button
       type="button"
       title={title}
@@ -876,29 +947,29 @@ function BeschreibungBearbeitenModal({ title, value, onChange, onClose }) {
         onClick();
       }}
       className="text-xs min-w-[26px] h-7 px-1.5 rounded border flex items-center justify-center"
-      style={{ borderColor: T.line, color: T.ink, ...style }}
+      style={{ borderColor: aktiv ? T.accent : T.line, background: aktiv ? T.accentSoft : "white", color: T.ink, ...style }}
     >
       {label}
     </button>
   );
 
   // Bild wird zunächst geladen, um die natürliche Größe zu kennen (auf max. Breite begrenzt) –
-  // erst mit einer festen Breite/Höhe im style-Attribut lässt sich das Bild später per Ziehen an
-  // der Ecke verändern und beim Word-Export korrekt einbetten.
+  // erst mit fester Breite/Höhe lässt es sich später per Eckziehen verändern (siehe
+  // GroessenveraenderbaresBild) und beim Word-Export korrekt einbetten.
   const bildEinfuegen = (e) => {
     const datei = e.target.files[0];
-    if (!datei) return;
+    if (!datei || !editor) return;
     const reader = new FileReader();
     reader.onload = () => {
       const dataUrl = reader.result;
-      const img = new Image();
-      img.onload = () => {
+      const bild = new window.Image();
+      bild.onload = () => {
         const maxBreite = 420;
-        const breite = Math.min(img.naturalWidth || maxBreite, maxBreite);
-        const hoehe = img.naturalWidth ? Math.round((img.naturalHeight / img.naturalWidth) * breite) : Math.round(breite * 0.75);
-        format("insertHTML", `<img src="${dataUrl}" style="width:${breite}px;height:${hoehe}px;" />`);
+        const breite = Math.min(bild.naturalWidth || maxBreite, maxBreite);
+        const hoehe = bild.naturalWidth ? Math.round((bild.naturalHeight / bild.naturalWidth) * breite) : Math.round(breite * 0.75);
+        editor.chain().focus().setImage({ src: dataUrl, width: breite, height: hoehe }).run();
       };
-      img.src = dataUrl;
+      bild.src = dataUrl;
     };
     reader.readAsDataURL(datei);
     e.target.value = "";
@@ -906,7 +977,7 @@ function BeschreibungBearbeitenModal({ title, value, onChange, onClose }) {
 
   const wordImportieren = (e) => {
     const datei = e.target.files[0];
-    if (!datei) return;
+    if (!datei || !editor) return;
     const reader = new FileReader();
     reader.onload = () => {
       mammoth
@@ -915,10 +986,8 @@ function BeschreibungBearbeitenModal({ title, value, onChange, onClose }) {
           { convertImage: mammoth.images.imgElement((bild) => bild.read("base64").then((daten) => ({ src: "data:" + bild.contentType + ";base64," + daten }))) }
         )
         .then((ergebnis) => {
-          if (ref.current) {
-            ref.current.innerHTML = ergebnis.value;
-            onChange(ergebnis.value);
-          }
+          editor.commands.setContent(ergebnis.value);
+          onChange(ergebnis.value);
         })
         .catch((err) => console.error("Word-Import fehlgeschlagen:", err));
     };
@@ -963,58 +1032,52 @@ function BeschreibungBearbeitenModal({ title, value, onChange, onClose }) {
         </div>
       </div>
 
-      <div className="flex items-center gap-1 px-6 py-2 border-b flex-wrap" style={{ borderColor: T.line, background: "white" }}>
-        {toolbarBtn("F", "Fett", () => format("bold"), { fontWeight: 700 })}
-        {toolbarBtn("K", "Kursiv", () => format("italic"), { fontStyle: "italic" })}
-        {toolbarBtn("U", "Unterstrichen", () => format("underline"), { textDecoration: "underline" })}
-        {toolbarBtn("D", "Durchgestrichen", () => format("strikeThrough"), { textDecoration: "line-through" })}
-        <span className="mx-1" style={{ width: 1, height: 20, background: T.line }} />
-        {toolbarBtn("H2", "Überschrift groß", () => format("formatBlock", "<h2>"), { fontWeight: 700 })}
-        {toolbarBtn("H3", "Überschrift klein", () => format("formatBlock", "<h3>"), { fontWeight: 700 })}
-        {toolbarBtn("T", "Fließtext", () => format("formatBlock", "<p>"), {})}
-        <span className="mx-1" style={{ width: 1, height: 20, background: T.line }} />
-        {toolbarBtn("≡", "Aufzählung", () => format("insertUnorderedList"), {})}
-        {toolbarBtn("1.", "Nummerierung", () => format("insertOrderedList"), {})}
-        <span className="mx-1" style={{ width: 1, height: 20, background: T.line }} />
-        {[T.ink, T.accent, T.success, T.danger].map((c) => (
+      {editor && (
+        <div className="flex items-center gap-1 px-6 py-2 border-b flex-wrap" style={{ borderColor: T.line, background: "white" }}>
+          {toolbarBtn("F", "Fett", () => editor.chain().focus().toggleBold().run(), editor.isActive("bold"), { fontWeight: 700 })}
+          {toolbarBtn("K", "Kursiv", () => editor.chain().focus().toggleItalic().run(), editor.isActive("italic"), { fontStyle: "italic" })}
+          {toolbarBtn("U", "Unterstrichen", () => editor.chain().focus().toggleUnderline().run(), editor.isActive("underline"), { textDecoration: "underline" })}
+          {toolbarBtn("D", "Durchgestrichen", () => editor.chain().focus().toggleStrike().run(), editor.isActive("strike"), { textDecoration: "line-through" })}
+          <span className="mx-1" style={{ width: 1, height: 20, background: T.line }} />
+          {toolbarBtn("H2", "Überschrift groß", () => editor.chain().focus().toggleHeading({ level: 2 }).run(), editor.isActive("heading", { level: 2 }), { fontWeight: 700 })}
+          {toolbarBtn("H3", "Überschrift klein", () => editor.chain().focus().toggleHeading({ level: 3 }).run(), editor.isActive("heading", { level: 3 }), { fontWeight: 700 })}
+          {toolbarBtn("T", "Fließtext", () => editor.chain().focus().setParagraph().run(), editor.isActive("paragraph"), {})}
+          <span className="mx-1" style={{ width: 1, height: 20, background: T.line }} />
+          {toolbarBtn("≡", "Aufzählung", () => editor.chain().focus().toggleBulletList().run(), editor.isActive("bulletList"), {})}
+          {toolbarBtn("1.", "Nummerierung", () => editor.chain().focus().toggleOrderedList().run(), editor.isActive("orderedList"), {})}
+          <span className="mx-1" style={{ width: 1, height: 20, background: T.line }} />
+          {[T.ink, T.accent, T.success, T.danger].map((c) => (
+            <button
+              key={c}
+              type="button"
+              title="Textfarbe"
+              onMouseDown={(e) => {
+                e.preventDefault();
+                editor.chain().focus().setColor(c).run();
+              }}
+              className="w-5 h-5 rounded-full border"
+              style={{ background: c, borderColor: T.line }}
+            />
+          ))}
+          <span className="mx-1" style={{ width: 1, height: 20, background: T.line }} />
           <button
-            key={c}
             type="button"
-            title="Textfarbe"
+            title="Bild einfügen (danach per Eckziehen im Text größenveränderbar, per Ziehen verschiebbar)"
             onMouseDown={(e) => {
               e.preventDefault();
-              format("foreColor", c);
+              bildInputRef.current?.click();
             }}
-            className="w-5 h-5 rounded-full border"
-            style={{ background: c, borderColor: T.line }}
-          />
-        ))}
-        <span className="mx-1" style={{ width: 1, height: 20, background: T.line }} />
-        <button
-          type="button"
-          title="Bild einfügen (danach per Eckziehen im Text größenveränderbar, per Ziehen verschiebbar)"
-          onMouseDown={(e) => {
-            e.preventDefault();
-            bildInputRef.current?.click();
-          }}
-          className="text-xs h-7 px-2 rounded border"
-          style={{ borderColor: T.line, color: T.ink }}
-        >
-          🖼 Bild
-        </button>
-        <input ref={bildInputRef} type="file" accept="image/*" onChange={bildEinfuegen} className="hidden" />
-      </div>
+            className="text-xs h-7 px-2 rounded border"
+            style={{ borderColor: T.line, color: T.ink }}
+          >
+            🖼 Bild
+          </button>
+          <input ref={bildInputRef} type="file" accept="image/*" onChange={bildEinfuegen} className="hidden" />
+        </div>
+      )}
 
       <div className="flex-1 overflow-y-auto px-6 py-5">
-        <div
-          ref={ref}
-          contentEditable
-          suppressContentEditableWarning
-          onInput={(e) => onChange(e.currentTarget.innerHTML)}
-          onBlur={(e) => onChange(e.currentTarget.innerHTML)}
-          className="rt-editable rt-content text-sm rounded border px-4 py-4"
-          style={{ borderColor: T.line, background: "white", minHeight: "100%" }}
-        />
+        <EditorContent editor={editor} />
       </div>
     </div>
   );
@@ -1911,11 +1974,23 @@ function DetailModal({ planung, methode, gruppe, fachObj, klasseObj, onClose, on
           </div>
           {methode?.materialien?.length ? (
             <div className="flex flex-col gap-1.5">
-              {methode.materialien.map((f) => (
-                <div key={f} className="text-xs rounded-lg px-2.5 py-1.5 border flex items-center gap-2" style={{ borderColor: T.line, background: T.paperAlt, color: T.muted }}>
-                  📄 {f}
-                </div>
-              ))}
+              {methode.materialien.map((f, i) =>
+                typeof f === "string" ? (
+                  <div key={i} className="text-xs rounded-lg px-2.5 py-1.5 border flex items-center gap-2" style={{ borderColor: T.line, background: T.paperAlt, color: T.muted }}>
+                    📄 {f}
+                  </div>
+                ) : (
+                  <a
+                    key={i}
+                    href={f.dataUrl}
+                    download={f.name}
+                    className="text-xs rounded-lg px-2.5 py-1.5 border flex items-center gap-2 hover:underline"
+                    style={{ borderColor: T.line, background: T.paperAlt, color: T.ink }}
+                  >
+                    📄 {f.name}
+                  </a>
+                )
+              )}
             </div>
           ) : (
             <p className="text-xs italic" style={{ color: T.muted }}>
@@ -1993,6 +2068,28 @@ function VerwaltungView(props) {
   // ----- Methoden: Filter (Jahrgang, Fach) + Sortierung -----
   const [methodenFilter, setMethodenFilter] = useState({ jahrgang: "", fachId: "" });
   const [editModal, setEditModal] = useState(null); // { methodeId } | { neu: true } | null
+
+  // Materialien (Arbeitsblätter etc.) je Methode: als Base64-Datei-URL im Zustand gehalten,
+  // dadurch ohne eigenen Server herunterladbar. Nicht für sehr große Dateien gedacht.
+  const materialHinzufuegen = (methodeId, dateien) => {
+    Promise.all(
+      Array.from(dateien).map(
+        (datei) =>
+          new Promise((resolve) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve({ name: datei.name, dataUrl: reader.result });
+            reader.readAsDataURL(datei);
+          })
+      )
+    ).then((neue) => {
+      const aktuell = methoden.find((x) => x.id === methodeId);
+      updateMethode(methodeId, { materialien: [...(aktuell?.materialien || []), ...neue] });
+    });
+  };
+  const materialEntfernen = (methodeId, index) => {
+    const aktuell = methoden.find((x) => x.id === methodeId);
+    updateMethode(methodeId, { materialien: (aktuell?.materialien || []).filter((_, i) => i !== index) });
+  };
   const [methodenSort, setMethodenSort] = useState({ feld: "name", richtung: "auf" });
   const methodenSpaltenkopf = (feld, label) => (
     <button onClick={() => setMethodenSort((s) => (s.feld === feld ? { feld, richtung: s.richtung === "auf" ? "ab" : "auf" } : { feld, richtung: "auf" }))} className="text-xs flex items-center gap-1 hover:underline" style={{ color: T.muted }}>
@@ -2432,7 +2529,12 @@ function VerwaltungView(props) {
               sortierteMethoden.map((m) => (
               <div key={m.id} className="rounded border p-3 bg-white" style={{ borderColor: T.line }}>
                 <div className="flex items-start justify-between gap-2 mb-1.5">
-                  <div className="font-medium text-sm">{m.name}</div>
+                  <input
+                    className="font-medium text-sm border rounded px-1.5 py-0.5 flex-1 min-w-0"
+                    style={inputStyle()}
+                    value={m.name}
+                    onChange={(e) => updateMethode(m.id, { name: e.target.value })}
+                  />
                   <button
                     onClick={() => setEditModal({ methodeId: m.id })}
                     title="Beschreibung bearbeiten"
@@ -2484,8 +2586,49 @@ function VerwaltungView(props) {
                     </div>
                   )}
                 </div>
-                <div className="flex flex-wrap gap-1 text-xs" style={{ color: T.muted }}>
-                  <Badge>{m.halbjahr}. HJ</Badge>
+                <div className="flex flex-wrap items-center gap-1 mb-2">
+                  <span className="text-[11px] font-medium mr-1" style={{ color: T.muted }}>
+                    Halbjahr:
+                  </span>
+                  {[1, 2].map((h) => (
+                    <button
+                      key={h}
+                      onClick={() => updateMethode(m.id, { halbjahr: h })}
+                      className="text-xs px-2 py-1 rounded border"
+                      style={m.halbjahr === h ? { background: T.ink, color: T.paper, borderColor: T.ink } : { borderColor: T.line }}
+                    >
+                      {h}. HJ
+                    </button>
+                  ))}
+                </div>
+                <div>
+                  <div className="text-[11px] font-medium mb-1" style={{ color: T.muted }}>
+                    Materialien
+                  </div>
+                  <div className="flex flex-col gap-1 mb-1.5">
+                    {(m.materialien || []).map((mat, i) => (
+                      <div key={i} className="flex items-center justify-between text-xs rounded border px-2 py-1" style={{ borderColor: T.line, background: T.paperAlt }}>
+                        <span className="truncate" style={{ color: T.muted }}>
+                          📄 {typeof mat === "string" ? mat : mat.name}
+                        </span>
+                        <button onClick={() => materialEntfernen(m.id, i)} className="shrink-0 ml-2" style={{ color: T.danger }}>
+                          ×
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                  <label className="text-xs cursor-pointer" style={{ color: T.accent }}>
+                    + Material hochladen
+                    <input
+                      type="file"
+                      multiple
+                      className="hidden"
+                      onChange={(e) => {
+                        if (e.target.files.length) materialHinzufuegen(m.id, e.target.files);
+                        e.target.value = "";
+                      }}
+                    />
+                  </label>
                 </div>
               </div>
               ))
