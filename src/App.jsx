@@ -1,5 +1,7 @@
 import { useState, useRef, useEffect } from "react";
 import Papa from "papaparse";
+import mammoth from "mammoth";
+import { Document, Packer, Paragraph, TextRun, ImageRun, HeadingLevel } from "docx";
 // Word-Import/-Export für die Methodenbeschreibung ist (noch) nicht enthalten – die dafür
 // nötigen Zusatzbibliotheken laufen in dieser Vorschau-Umgebung nicht. Bei Bedarf im eigenen
 // Projekt ergänzbar (siehe frühere Chat-Nachrichten für den genauen Code).
@@ -744,6 +746,88 @@ function StatusDot({ status }) {
   return <span className="inline-block rounded-full" style={{ width: 9, height: 9, background: color }} />;
 }
 
+// ---------- Word-Export der Methodenbeschreibung (HTML -> .docx) ----------
+function farbeZuHex(css) {
+  if (!css) return undefined;
+  const m = css.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/);
+  if (!m) return undefined;
+  return [1, 2, 3].map((i) => Number(m[i]).toString(16).padStart(2, "0")).join("").toUpperCase();
+}
+
+function slug(text) {
+  return (
+    (text || "methode")
+      .normalize("NFKD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .replace(/[^a-zA-Z0-9]+/g, "_")
+      .replace(/^_+|_+$/g, "") || "methode"
+  );
+}
+
+function dataUrlZuBytes(dataUrl) {
+  const komma = dataUrl.indexOf(",");
+  const typ = dataUrl.slice(5, komma).split(";")[0].split("/")[1] || "png";
+  const bin = atob(dataUrl.slice(komma + 1));
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return { bytes, typ: typ === "jpeg" ? "jpg" : typ };
+}
+
+function beschreibungZuDocxAbsaetzen(html) {
+  const dok = new DOMParser().parseFromString(html && html.trim() ? html : "<p></p>", "text/html");
+  const absaetze = [];
+
+  const inlineKinder = (node, stil) => {
+    let teile = [];
+    node.childNodes.forEach((kind) => {
+      if (kind.nodeType === Node.TEXT_NODE) {
+        if (kind.textContent) teile.push(new TextRun({ text: kind.textContent, ...stil }));
+      } else if (kind.nodeType === Node.ELEMENT_NODE) {
+        const tag = kind.tagName.toLowerCase();
+        if (tag === "img") {
+          const src = kind.getAttribute("src") || "";
+          if (src.startsWith("data:image/")) {
+            const { bytes, typ } = dataUrlZuBytes(src);
+            const breite = parseInt(kind.style.width) || parseInt(kind.getAttribute("width")) || 320;
+            const hoehe = parseInt(kind.style.height) || parseInt(kind.getAttribute("height")) || Math.round(breite * 0.75);
+            teile.push(new ImageRun({ data: bytes, type: typ, transformation: { width: breite, height: hoehe } }));
+          }
+          return;
+        }
+        const neu = { ...stil };
+        if (tag === "strong" || tag === "b") neu.bold = true;
+        if (tag === "em" || tag === "i") neu.italics = true;
+        if (tag === "u") neu.underline = {};
+        if (tag === "s" || tag === "strike") neu.strike = true;
+        const farbe = farbeZuHex(kind.style && kind.style.color);
+        if (farbe) neu.color = farbe;
+        teile = teile.concat(inlineKinder(kind, neu));
+      }
+    });
+    return teile;
+  };
+
+  const bloecke = dok.body.children.length ? Array.from(dok.body.children) : [];
+  bloecke.forEach((block) => {
+    const tag = block.tagName.toLowerCase();
+    if (tag === "h1" || tag === "h2") {
+      absaetze.push(new Paragraph({ heading: HeadingLevel.HEADING_2, children: inlineKinder(block, {}) }));
+    } else if (tag === "h3" || tag === "h4") {
+      absaetze.push(new Paragraph({ heading: HeadingLevel.HEADING_3, children: inlineKinder(block, {}) }));
+    } else if (tag === "ul" || tag === "ol") {
+      Array.from(block.children).forEach((li, i) => {
+        const teile = inlineKinder(li, {});
+        if (tag === "ol") teile.unshift(new TextRun(`${i + 1}. `));
+        absaetze.push(new Paragraph({ children: teile.length ? teile : [new TextRun("")], bullet: tag === "ul" ? { level: 0 } : undefined }));
+      });
+    } else {
+      const teile = inlineKinder(block, {});
+      absaetze.push(new Paragraph({ children: teile.length ? teile : [new TextRun("")] }));
+    }
+  });
+
+  return absaetze.length ? absaetze : [new Paragraph({ children: [new TextRun("")] })];
+}
 
 // Rich-Text-Feld für die vollständige Methodenbeschreibung: reine Anzeige.
 // Bearbeitet wird ausschließlich über BeschreibungBearbeitenModal (Zugriff per Bearbeiten-Symbol).
@@ -763,6 +847,8 @@ function Beschreibungsfeld({ value }) {
 function BeschreibungBearbeitenModal({ title, value, onChange, onClose }) {
   const ref = useRef(null);
   const bildInputRef = useRef(null);
+  const wordImportRef = useRef(null);
+  const [exportLaeuft, setExportLaeuft] = useState(false);
 
   // Inhalt nur einmal beim Öffnen in den editierbaren Bereich schreiben – NICHT bei jeder
   // Änderung, sonst würde jeder Tastendruck (über onChange -> Zustandsänderung -> Neu-Rendern)
@@ -818,11 +904,59 @@ function BeschreibungBearbeitenModal({ title, value, onChange, onClose }) {
     e.target.value = "";
   };
 
+  const wordImportieren = (e) => {
+    const datei = e.target.files[0];
+    if (!datei) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      mammoth
+        .convertToHtml(
+          { arrayBuffer: reader.result },
+          { convertImage: mammoth.images.imgElement((bild) => bild.read("base64").then((daten) => ({ src: "data:" + bild.contentType + ";base64," + daten }))) }
+        )
+        .then((ergebnis) => {
+          if (ref.current) {
+            ref.current.innerHTML = ergebnis.value;
+            onChange(ergebnis.value);
+          }
+        })
+        .catch((err) => console.error("Word-Import fehlgeschlagen:", err));
+    };
+    reader.readAsArrayBuffer(datei);
+    e.target.value = "";
+  };
+
+  const alsWordExportieren = async () => {
+    setExportLaeuft(true);
+    try {
+      const absaetze = beschreibungZuDocxAbsaetzen(value);
+      const doc = new Document({ sections: [{ children: absaetze }] });
+      const blob = await Packer.toBlob(doc);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${slug(title)}.docx`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error("Word-Export fehlgeschlagen:", err);
+    } finally {
+      setExportLaeuft(false);
+    }
+  };
+
   return (
     <div className="fixed inset-y-0 right-0 left-0 lg:left-64 z-50 flex flex-col" style={{ background: T.paper }}>
       <div className="flex items-center justify-between gap-3 px-6 py-3 border-b" style={{ borderColor: T.line, background: "white" }}>
         <h2 className="mc-display text-lg font-semibold truncate">{title}</h2>
         <div className="flex items-center gap-2 shrink-0">
+          <Button small tone="ghost" onClick={() => wordImportRef.current?.click()}>
+            Word importieren
+          </Button>
+          <input ref={wordImportRef} type="file" accept=".docx" onChange={wordImportieren} className="hidden" />
+          <Button small tone="ghost" onClick={alsWordExportieren} disabled={exportLaeuft}>
+            {exportLaeuft ? "Exportiere…" : "Als Word exportieren"}
+          </Button>
           <Button small onClick={onClose}>
             Fertig
           </Button>
