@@ -2421,12 +2421,13 @@ function VerwaltungView(props) {
     );
   };
   const [methodenImportFehler, setMethodenImportFehler] = useState("");
+  const [methodenImportLaeuft, setMethodenImportLaeuft] = useState(false);
   const methodenImportieren = (e) => {
     const datei = e.target.files[0];
     if (!datei) return;
     setMethodenImportFehler("");
     const reader = new FileReader();
-    reader.onload = () => {
+    reader.onload = async () => {
       try {
         const payload = JSON.parse(reader.result);
         let objekte, ersetztKompletteListe;
@@ -2441,10 +2442,45 @@ function VerwaltungView(props) {
           return;
         }
         const { faecherPool, neueMethoden } = bauMethodenAusExport(objekte, faecher);
-        setFaecher(faecherPool);
-        setMethoden(ersetztKompletteListe ? neueMethoden : [...methoden, ...neueMethoden]);
+        const neuAngelegteFaecher = faecherPool.filter((f) => !faecher.some((alt) => alt.id === f.id));
+
+        if (datenquelle === "supabase") {
+          setMethodenImportLaeuft(true);
+          // Neu benötigte Fächer zuerst in Supabase anlegen; lokale IDs durch die von
+          // Supabase vergebenen ersetzen, BEVOR die Methoden angelegt werden (die
+          // faecherIds müssen auf echte, existierende Fächer zeigen).
+          const fachIdErsatz = {};
+          for (const f of neuAngelegteFaecher) {
+            const serverFach = await db.fachErstellen({ name: f.name, kuerzel: f.kuerzel, quelle: f.quelle });
+            fachIdErsatz[f.id] = serverFach.id;
+          }
+          const faecherPoolServerseitig = faecherPool.map((f) => (fachIdErsatz[f.id] ? { ...f, id: fachIdErsatz[f.id] } : f));
+          const methodenServerseitig = neueMethoden.map((m) => ({ ...m, faecherIds: m.faecherIds.map((fid) => fachIdErsatz[fid] || fid) }));
+
+          if (ersetztKompletteListe) {
+            // Kompletter Satz ersetzt auch in Supabase alles Bestehende (die Kaskade im
+            // Datenbank-Schema entfernt dabei automatisch die zugehörigen Planungen mit).
+            for (const alt of methoden) await db.methodeLoeschen(alt.id);
+          }
+          const angelegteMethoden = [];
+          for (const m of methodenServerseitig) {
+            angelegteMethoden.push(await db.methodeErstellen(m));
+          }
+          setFaecher(faecherPoolServerseitig);
+          setMethoden(ersetztKompletteListe ? angelegteMethoden : [...methoden, ...angelegteMethoden]);
+          if (ersetztKompletteListe) {
+            const alteIds = new Set(methoden.map((m) => m.id));
+            setPlanungen((prev) => prev.filter((p) => !alteIds.has(p.methodeId)));
+          }
+        } else {
+          setFaecher(faecherPool);
+          setMethoden(ersetztKompletteListe ? neueMethoden : [...methoden, ...neueMethoden]);
+        }
       } catch (err) {
-        setMethodenImportFehler("Datei konnte nicht gelesen werden (kein gültiges JSON).");
+        console.error("Methoden-Import fehlgeschlagen:", err);
+        setMethodenImportFehler(err.message || "Datei konnte nicht gelesen/übernommen werden.");
+      } finally {
+        setMethodenImportLaeuft(false);
       }
     };
     reader.readAsText(datei);
@@ -2908,9 +2944,12 @@ function VerwaltungView(props) {
             <Button small tone="ghost" onClick={alleMethodenExportieren}>
               Alle exportieren
             </Button>
-            <label className="text-xs px-2 py-1 rounded border cursor-pointer" style={{ borderColor: T.line, color: T.ink }}>
-              Importieren…
-              <input type="file" accept=".json" className="hidden" onChange={methodenImportieren} />
+            <label
+              className="text-xs px-2 py-1 rounded border cursor-pointer"
+              style={{ borderColor: T.line, color: methodenImportLaeuft ? T.muted : T.ink, opacity: methodenImportLaeuft ? 0.6 : 1 }}
+            >
+              {methodenImportLaeuft ? "Importiere…" : "Importieren…"}
+              <input type="file" accept=".json" className="hidden" onChange={methodenImportieren} disabled={methodenImportLaeuft} />
             </label>
             <span className="text-xs" style={{ color: T.muted }}>
               (einzelne Methode wird ergänzt, ein kompletter Satz ersetzt die aktuelle Liste)
@@ -3175,6 +3214,7 @@ function VerwaltungView(props) {
           lerngruppen={lerngruppen} setLerngruppen={setLerngruppen}
           methoden={methoden} setMethoden={setMethoden}
           planungen={planungen} setPlanungen={setPlanungen}
+          datenquelle={datenquelle}
         />
       )}
 
@@ -3256,7 +3296,7 @@ function LerngruppeZeile({ g, faecher, lehrer, klassen, updateLerngruppe, remove
 }
 
 // ---------- Untis-Import (Fächer, Lehrer, Klassen aus CSV-Export) ----------
-function UntisImportView({ faecher, setFaecher, lehrer, setLehrer, klassen, setKlassen, lerngruppen, setLerngruppen, methoden, setMethoden, planungen, setPlanungen }) {
+function UntisImportView({ faecher, setFaecher, lehrer, setLehrer, klassen, setKlassen, lerngruppen, setLerngruppen, methoden, setMethoden, planungen, setPlanungen, datenquelle }) {
   const SEK1_MUSTER = /^(0[5-9]|10)[a-c]$/;
 
   const [gesamtZeilen, setGesamtZeilen] = useState(null);
@@ -3265,6 +3305,8 @@ function UntisImportView({ faecher, setFaecher, lehrer, setLehrer, klassen, setK
   const [modus, setModus] = useState("merge"); // 'merge' = nur Änderungen übernehmen, 'ueberschreiben' = vollständig ersetzen
   const [fehler, setFehler] = useState("");
   const [ergebnis, setErgebnis] = useState(null);
+  const [importLaeuft, setImportLaeuft] = useState(false);
+  const [importFortschritt, setImportFortschritt] = useState("");
 
   const spalte = (row, ...namen) => {
     for (const n of namen) {
@@ -3314,7 +3356,29 @@ function UntisImportView({ faecher, setFaecher, lehrer, setLehrer, klassen, setK
     reader.readAsText(datei, "UTF-8");
   };
 
-  const starteImport = () => {
+  const starteImport = async () => {
+    if (datenquelle === "supabase") {
+      setImportLaeuft(true);
+      setFehler("");
+      try {
+        const ergebnisDb = await db.importiereUntisNachSupabase({ sek1Zeilen, fachZuordnung, modus, faecher, lehrer, klassen }, setImportFortschritt);
+        const daten = await db.ladeAlleDaten();
+        setFaecher(daten.faecher);
+        setLehrer(daten.lehrer);
+        setLerngruppen(daten.lerngruppen);
+        setMethoden(daten.methoden);
+        setPlanungen(daten.planungen);
+        setErgebnis({ ...ergebnisDb, entfernteZuordnungen: undefined });
+      } catch (err) {
+        console.error("Untis-Import nach Supabase fehlgeschlagen:", err);
+        setFehler(err.message || String(err));
+      } finally {
+        setImportLaeuft(false);
+        setImportFortschritt("");
+      }
+      return;
+    }
+
     const neueFaecher = [...faecher];
     const neueLehrer = [...lehrer];
     let neueLerngruppen = [...lerngruppen];
@@ -3579,8 +3643,8 @@ function UntisImportView({ faecher, setFaecher, lehrer, setLehrer, klassen, setK
               </label>
             </div>
           </div>
-          <Button onClick={starteImport} tone="accent">
-            Import durchführen
+          <Button onClick={starteImport} tone="accent" disabled={importLaeuft}>
+            {importLaeuft ? `Importiere… ${importFortschritt}` : "Import durchführen"}
           </Button>
         </div>
       )}
