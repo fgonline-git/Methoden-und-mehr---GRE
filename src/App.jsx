@@ -1273,6 +1273,12 @@ export default function App() {
   };
   const toggleInList = (list, val) => (list.includes(val) ? list.filter((x) => x !== val) : [...list, val]);
   const updateMethode = (id, patch) => setMethoden((prev) => prev.map((m) => (m.id === id ? { ...m, ...patch } : m)));
+  // Löschen einer Methode kaskadiert auf ihre Planungen (Zeitleisten-Zuordnungen) - sonst
+  // blieben dort tote Verweise auf eine nicht mehr existierende Methode zurück.
+  const removeMethode = (id) => {
+    setMethoden((prev) => prev.filter((m) => m.id !== id));
+    setPlanungen((prev) => prev.filter((p) => p.methodeId !== id));
+  };
 
   // ----- Planung (Zuordnung + Durchführung in einem) -----
   const lerngruppenFuerKlasse = (klasseId) => lerngruppen.filter((g) => g.klassenIds.includes(klasseId));
@@ -1541,7 +1547,7 @@ export default function App() {
               updateKlasse, neuKlasse, setNeuKlasse, addKlasse,
               neuLg, setNeuLg, addLerngruppe, toggleKlasseInNeuLg, updateLerngruppe, removeLerngruppe,
               lerngruppenSicherung, undoLerngruppenAenderung, verwirfLerngruppenSicherung,
-              neuMethode, setNeuMethode, addMethode, toggleInList, updateMethode, neuMethodeKey,
+              neuMethode, setNeuMethode, addMethode, toggleInList, updateMethode, removeMethode, neuMethodeKey,
             }}
           />
         )}
@@ -2138,7 +2144,7 @@ function VerwaltungView(props) {
     updateKlasse, neuKlasse, setNeuKlasse, addKlasse,
     neuLg, setNeuLg, addLerngruppe, toggleKlasseInNeuLg, updateLerngruppe, removeLerngruppe,
     lerngruppenSicherung, undoLerngruppenAenderung, verwirfLerngruppenSicherung,
-    neuMethode, setNeuMethode, addMethode, toggleInList, updateMethode, neuMethodeKey,
+    neuMethode, setNeuMethode, addMethode, toggleInList, updateMethode, removeMethode, neuMethodeKey,
   } = props;
 
   const fach = (id) => faecher.find((f) => f.id === id);
@@ -2183,6 +2189,7 @@ function VerwaltungView(props) {
   const [methodenFilter, setMethodenFilter] = useState({ jahrgang: "", fachId: "" });
   const [editModal, setEditModal] = useState(null); // { methodeId } | { neu: true } | null
   const [pdfVorschau, setPdfVorschau] = useState(null);
+  const [methodeLoeschenBestaetigen, setMethodeLoeschenBestaetigen] = useState(null); // methodeId oder null
 
   // Materialien (Arbeitsblätter etc.) je Methode: als Base64-Datei-URL im Zustand gehalten,
   // dadurch ohne eigenen Server herunterladbar. Nicht für sehr große Dateien gedacht.
@@ -2741,6 +2748,32 @@ function VerwaltungView(props) {
                   >
                     ⬇ Export
                   </button>
+                  {methodeLoeschenBestaetigen === m.id ? (
+                    <span className="flex items-center gap-1.5 shrink-0">
+                      <button
+                        onClick={() => {
+                          removeMethode(m.id);
+                          setMethodeLoeschenBestaetigen(null);
+                        }}
+                        className="text-xs font-medium"
+                        style={{ color: T.danger }}
+                      >
+                        Ja, löschen
+                      </button>
+                      <button onClick={() => setMethodeLoeschenBestaetigen(null)} className="text-xs" style={{ color: T.muted }}>
+                        Abbr.
+                      </button>
+                    </span>
+                  ) : (
+                    <button
+                      onClick={() => setMethodeLoeschenBestaetigen(m.id)}
+                      title="Methode löschen"
+                      className="text-xs shrink-0"
+                      style={{ color: T.danger }}
+                    >
+                      Löschen
+                    </button>
+                  )}
                 </div>
                 <div className="mb-2">
                   <Beschreibungsfeld value={m.beschreibung} />
