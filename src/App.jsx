@@ -1214,7 +1214,7 @@ export default function App() {
   const [neuMethodeKey, setNeuMethodeKey] = useState(0);
   const addMethode = () => {
     if (!neuMethode.name || neuMethode.faecherIds.length === 0 || neuMethode.jahrgaenge.length === 0) return;
-    setMethoden([...methoden, { id: uid("m"), materialien: [], ...neuMethode }]);
+    setMethoden([...methoden, { id: uid("m"), materialien: [], links: [], ...neuMethode }]);
     setNeuMethode({ name: "", beschreibung: "", faecherIds: [], jahrgaenge: [], halbjahr: 1 });
     setNeuMethodeKey((k) => k + 1); // erzwingt Reset des unkontrollierten Rich-Text-Felds
   };
@@ -2037,6 +2037,28 @@ function DetailModal({ planung, methode, gruppe, fachObj, klasseObj, onClose, on
           )}
         </div>
 
+        {methode?.links?.length > 0 && (
+          <div className="mb-5">
+            <div className="mc-display text-xs font-semibold uppercase tracking-wide mb-1.5" style={{ color: T.muted }}>
+              Web-Links
+            </div>
+            <div className="flex flex-col gap-1.5">
+              {methode.links.map((link, i) => (
+                <a
+                  key={i}
+                  href={link.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-xs rounded-lg px-2.5 py-1.5 border flex items-center gap-2 hover:underline"
+                  style={{ borderColor: T.line, background: T.paperAlt, color: T.ink }}
+                >
+                  🔗 {link.titel}
+                </a>
+              ))}
+            </div>
+          </div>
+        )}
+
         <div className="flex justify-between items-center">
           <button onClick={onRemove} className="text-xs" style={{ color: T.danger }}>
             Zuordnung entfernen
@@ -2130,6 +2152,23 @@ function VerwaltungView(props) {
     const aktuell = methoden.find((x) => x.id === methodeId);
     updateMethode(methodeId, { materialien: (aktuell?.materialien || []).filter((_, i) => i !== index) });
   };
+
+  // Web-Links je Methode: { titel, url }. neuerLink hält den Entwurf pro Methode
+  // (mehrere Karten gleichzeitig, jede mit eigenem kleinen Eingabeformular).
+  const [neuerLink, setNeuerLink] = useState({});
+  const linkHinzufuegen = (methodeId) => {
+    const entwurf = neuerLink[methodeId];
+    if (!entwurf?.url?.trim()) return;
+    const url = /^https?:\/\//i.test(entwurf.url.trim()) ? entwurf.url.trim() : `https://${entwurf.url.trim()}`;
+    const aktuell = methoden.find((x) => x.id === methodeId);
+    updateMethode(methodeId, { links: [...(aktuell?.links || []), { titel: entwurf.titel?.trim() || url, url }] });
+    setNeuerLink({ ...neuerLink, [methodeId]: { titel: "", url: "" } });
+  };
+  const linkEntfernen = (methodeId, index) => {
+    const aktuell = methoden.find((x) => x.id === methodeId);
+    updateMethode(methodeId, { links: (aktuell?.links || []).filter((_, i) => i !== index) });
+  };
+
   const [methodenSort, setMethodenSort] = useState({ feld: "name", richtung: "auf" });
   const methodenSpaltenkopf = (feld, label) => (
     <button onClick={() => setMethodenSort((s) => (s.feld === feld ? { feld, richtung: s.richtung === "auf" ? "ab" : "auf" } : { feld, richtung: "auf" }))} className="text-xs flex items-center gap-1 hover:underline" style={{ color: T.muted }}>
@@ -2675,6 +2714,43 @@ function VerwaltungView(props) {
                       }}
                     />
                   </label>
+                </div>
+                <div className="mt-2">
+                  <div className="text-[11px] font-medium mb-1" style={{ color: T.muted }}>
+                    Web-Links
+                  </div>
+                  <div className="flex flex-col gap-1 mb-1.5">
+                    {(m.links || []).map((link, i) => (
+                      <div key={i} className="flex items-center justify-between text-xs rounded border px-2 py-1" style={{ borderColor: T.line, background: T.paperAlt }}>
+                        <a href={link.url} target="_blank" rel="noopener noreferrer" className="truncate hover:underline" style={{ color: T.ink }}>
+                          🔗 {link.titel}
+                        </a>
+                        <button onClick={() => linkEntfernen(m.id, i)} className="shrink-0 ml-2" style={{ color: T.danger }}>
+                          ×
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="flex gap-1">
+                    <input
+                      className="border rounded px-1.5 py-1 text-xs flex-1 min-w-0"
+                      style={inputStyle()}
+                      placeholder="Titel (optional)"
+                      value={neuerLink[m.id]?.titel || ""}
+                      onChange={(e) => setNeuerLink({ ...neuerLink, [m.id]: { ...neuerLink[m.id], titel: e.target.value } })}
+                    />
+                    <input
+                      className="border rounded px-1.5 py-1 text-xs flex-1 min-w-0"
+                      style={inputStyle()}
+                      placeholder="https://…"
+                      value={neuerLink[m.id]?.url || ""}
+                      onChange={(e) => setNeuerLink({ ...neuerLink, [m.id]: { ...neuerLink[m.id], url: e.target.value } })}
+                      onKeyDown={(e) => e.key === "Enter" && linkHinzufuegen(m.id)}
+                    />
+                    <button onClick={() => linkHinzufuegen(m.id)} className="text-xs px-2 rounded border shrink-0" style={{ borderColor: T.accent, color: T.accent }}>
+                      + Link
+                    </button>
+                  </div>
                 </div>
               </div>
               ))
