@@ -830,6 +830,59 @@ function slug(text) {
   );
 }
 
+// ---------- Methoden-Export/Import (JSON) ----------
+// Fächer werden nicht über ihre interne ID referenziert (die ist nur innerhalb einer
+// Sitzung stabil und ändert sich z.B. bei jedem Neuladen durch den Untis-Auto-Import neu),
+// sondern über das Fach-Kürzel – das bleibt über Sitzungen hinweg vergleichbar.
+function methodeZuExportobjekt(m, faecher) {
+  return {
+    name: m.name,
+    beschreibung: m.beschreibung || "",
+    jahrgaenge: m.jahrgaenge || [],
+    faecherKuerzel: (m.faecherIds || []).map((fid) => faecher.find((f) => f.id === fid)?.kuerzel).filter(Boolean),
+    halbjahr: m.halbjahr,
+    materialien: m.materialien || [],
+    links: m.links || [],
+  };
+}
+
+// Baut aus einem oder mehreren Export-Objekten frische Methoden auf; fehlende Fächer
+// (Kürzel, das es in diesem Browser/dieser Sitzung noch nicht gibt) werden dabei neu
+// angelegt, vorhandene wiederverwendet - im ganzen Stapel konsistent, nicht pro Methode
+// einzeln, damit dasselbe Kürzel nicht mehrfach neu angelegt wird.
+function bauMethodenAusExport(objekte, faecherAusgangswert) {
+  const faecherPool = [...faecherAusgangswert];
+  const findeOderErstelleFach = (kuerzel) => {
+    let f = faecherPool.find((x) => x.kuerzel === kuerzel);
+    if (!f) {
+      f = { id: uid("f"), name: kuerzel, kuerzel, quelle: "import" };
+      faecherPool.push(f);
+    }
+    return f;
+  };
+  const neueMethoden = objekte.map((obj) => ({
+    id: uid("m"),
+    name: obj.name || "Importierte Methode",
+    beschreibung: obj.beschreibung || "",
+    jahrgaenge: obj.jahrgaenge || [],
+    faecherIds: (obj.faecherKuerzel || []).map((k) => findeOderErstelleFach(k).id),
+    halbjahr: obj.halbjahr || 1,
+    materialien: obj.materialien || [],
+    links: obj.links || [],
+  }));
+  return { faecherPool, neueMethoden };
+}
+
+function jsonDateiHerunterladen(objekt, dateiname) {
+  const blob = new Blob([JSON.stringify(objekt, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = dateiname;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
 function dataUrlZuBytes(dataUrl) {
   const komma = dataUrl.indexOf(",");
   const typ = dataUrl.slice(5, komma).split(";")[0].split("/")[1] || "png";
@@ -2169,6 +2222,47 @@ function VerwaltungView(props) {
     updateMethode(methodeId, { links: (aktuell?.links || []).filter((_, i) => i !== index) });
   };
 
+  // ----- Methoden-Export/Import (JSON) -----
+  const methodeExportieren = (m) => {
+    jsonDateiHerunterladen({ typ: "methodencurriculum-methode", version: 1, methode: methodeZuExportobjekt(m, faecher) }, `${slug(m.name)}.methode.json`);
+  };
+  const alleMethodenExportieren = () => {
+    jsonDateiHerunterladen(
+      { typ: "methodencurriculum-methoden-satz", version: 1, methoden: methoden.map((m) => methodeZuExportobjekt(m, faecher)) },
+      "methoden-satz.json"
+    );
+  };
+  const [methodenImportFehler, setMethodenImportFehler] = useState("");
+  const methodenImportieren = (e) => {
+    const datei = e.target.files[0];
+    if (!datei) return;
+    setMethodenImportFehler("");
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const payload = JSON.parse(reader.result);
+        let objekte, ersetztKompletteListe;
+        if (payload?.typ === "methodencurriculum-methode" && payload.methode) {
+          objekte = [payload.methode];
+          ersetztKompletteListe = false;
+        } else if (payload?.typ === "methodencurriculum-methoden-satz" && Array.isArray(payload.methoden)) {
+          objekte = payload.methoden;
+          ersetztKompletteListe = true;
+        } else {
+          setMethodenImportFehler("Diese Datei sieht nicht wie ein Methoden-Export dieser App aus.");
+          return;
+        }
+        const { faecherPool, neueMethoden } = bauMethodenAusExport(objekte, faecher);
+        setFaecher(faecherPool);
+        setMethoden(ersetztKompletteListe ? neueMethoden : [...methoden, ...neueMethoden]);
+      } catch (err) {
+        setMethodenImportFehler("Datei konnte nicht gelesen werden (kein gültiges JSON).");
+      }
+    };
+    reader.readAsText(datei);
+    e.target.value = "";
+  };
+
   const [methodenSort, setMethodenSort] = useState({ feld: "name", richtung: "auf" });
   const methodenSpaltenkopf = (feld, label) => (
     <button onClick={() => setMethodenSort((s) => (s.feld === feld ? { feld, richtung: s.richtung === "auf" ? "ab" : "auf" } : { feld, richtung: "auf" }))} className="text-xs flex items-center gap-1 hover:underline" style={{ color: T.muted }}>
@@ -2601,6 +2695,23 @@ function VerwaltungView(props) {
               {methodenSpaltenkopf("jahrgang", "Jahrgang")}
             </span>
           </div>
+          <div className="flex flex-wrap items-center gap-2 mb-3 pb-3 border-b" style={{ borderColor: T.line }}>
+            <Button small tone="ghost" onClick={alleMethodenExportieren}>
+              Alle exportieren
+            </Button>
+            <label className="text-xs px-2 py-1 rounded border cursor-pointer" style={{ borderColor: T.line, color: T.ink }}>
+              Importieren…
+              <input type="file" accept=".json" className="hidden" onChange={methodenImportieren} />
+            </label>
+            <span className="text-xs" style={{ color: T.muted }}>
+              (einzelne Methode wird ergänzt, ein kompletter Satz ersetzt die aktuelle Liste)
+            </span>
+            {methodenImportFehler && (
+              <span className="text-xs" style={{ color: T.danger }}>
+                {methodenImportFehler}
+              </span>
+            )}
+          </div>
           <div className="grid gap-3 mb-5" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))" }}>
             {sortierteMethoden.length === 0 ? (
               <p className="text-xs italic" style={{ color: T.muted }}>Keine Methoden für diese Filterauswahl.</p>
@@ -2621,6 +2732,14 @@ function VerwaltungView(props) {
                     style={{ color: T.accent }}
                   >
                     ✎ Bearbeiten
+                  </button>
+                  <button
+                    onClick={() => methodeExportieren(m)}
+                    title="Diese Methode als Datei exportieren"
+                    className="text-xs shrink-0"
+                    style={{ color: T.muted }}
+                  >
+                    ⬇ Export
                   </button>
                 </div>
                 <div className="mb-2">
