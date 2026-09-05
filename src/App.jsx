@@ -1903,7 +1903,36 @@ function LehrerAnsicht({ lehrerObj, planungen, klass, meth, fach, lg, onOeffne }
 }
 
 // ---------- Detail-Modal ----------
+// ---------- PDF-Vorschau für hochgeladene Materialien ----------
+function istPdf(material) {
+  return typeof material !== "string" && (material.name || "").toLowerCase().endsWith(".pdf");
+}
+
+function PdfVorschauModal({ material, onClose }) {
+  return (
+    <div
+      className="fixed inset-0 z-[60] flex flex-col"
+      style={{ background: "rgba(0,0,0,0.75)" }}
+      onClick={(e) => e.target === e.currentTarget && onClose()}
+    >
+      <div className="flex items-center justify-between px-4 py-3 shrink-0" style={{ background: T.board, color: T.boardText }}>
+        <span className="text-sm truncate">{material.name}</span>
+        <div className="flex items-center gap-4 shrink-0">
+          <a href={material.dataUrl} download={material.name} className="text-xs underline">
+            Herunterladen
+          </a>
+          <button onClick={onClose} className="text-xl leading-none" aria-label="Vorschau schließen">
+            ×
+          </button>
+        </div>
+      </div>
+      <iframe src={material.dataUrl} title={material.name} className="flex-1 w-full border-0" style={{ background: "white" }} />
+    </div>
+  );
+}
+
 function DetailModal({ planung, methode, gruppe, fachObj, klasseObj, onClose, onStatus, onNotiz, onRemove }) {
+  const [pdfVorschau, setPdfVorschau] = useState(null);
   const tone = planung.status === "erledigt" ? "success" : planung.status === "ausgefallen" ? "cancelled" : "accent";
   return (
     <div
@@ -1979,6 +2008,15 @@ function DetailModal({ planung, methode, gruppe, fachObj, klasseObj, onClose, on
                   <div key={i} className="text-xs rounded-lg px-2.5 py-1.5 border flex items-center gap-2" style={{ borderColor: T.line, background: T.paperAlt, color: T.muted }}>
                     📄 {f}
                   </div>
+                ) : istPdf(f) ? (
+                  <button
+                    key={i}
+                    onClick={() => setPdfVorschau(f)}
+                    className="text-xs rounded-lg px-2.5 py-1.5 border flex items-center gap-2 hover:underline text-left"
+                    style={{ borderColor: T.line, background: T.paperAlt, color: T.ink }}
+                  >
+                    📄 {f.name} <span style={{ color: T.muted }}>· Vorschau</span>
+                  </button>
                 ) : (
                   <a
                     key={i}
@@ -2008,6 +2046,7 @@ function DetailModal({ planung, methode, gruppe, fachObj, klasseObj, onClose, on
           </Button>
         </div>
       </div>
+      {pdfVorschau && <PdfVorschauModal material={pdfVorschau} onClose={() => setPdfVorschau(null)} />}
     </div>
   );
 }
@@ -2068,6 +2107,7 @@ function VerwaltungView(props) {
   // ----- Methoden: Filter (Jahrgang, Fach) + Sortierung -----
   const [methodenFilter, setMethodenFilter] = useState({ jahrgang: "", fachId: "" });
   const [editModal, setEditModal] = useState(null); // { methodeId } | { neu: true } | null
+  const [pdfVorschau, setPdfVorschau] = useState(null);
 
   // Materialien (Arbeitsblätter etc.) je Methode: als Base64-Datei-URL im Zustand gehalten,
   // dadurch ohne eigenen Server herunterladbar. Nicht für sehr große Dateien gedacht.
@@ -2608,9 +2648,15 @@ function VerwaltungView(props) {
                   <div className="flex flex-col gap-1 mb-1.5">
                     {(m.materialien || []).map((mat, i) => (
                       <div key={i} className="flex items-center justify-between text-xs rounded border px-2 py-1" style={{ borderColor: T.line, background: T.paperAlt }}>
-                        <span className="truncate" style={{ color: T.muted }}>
-                          📄 {typeof mat === "string" ? mat : mat.name}
-                        </span>
+                        {istPdf(mat) ? (
+                          <button onClick={() => setPdfVorschau(mat)} className="truncate text-left hover:underline" style={{ color: T.ink }}>
+                            📄 {mat.name} <span style={{ color: T.muted }}>· Vorschau</span>
+                          </button>
+                        ) : (
+                          <span className="truncate" style={{ color: T.muted }}>
+                            📄 {typeof mat === "string" ? mat : mat.name}
+                          </span>
+                        )}
                         <button onClick={() => materialEntfernen(m.id, i)} className="shrink-0 ml-2" style={{ color: T.danger }}>
                           ×
                         </button>
@@ -2712,6 +2758,7 @@ function VerwaltungView(props) {
           onClose={() => setEditModal(null)}
         />
       )}
+      {pdfVorschau && <PdfVorschauModal material={pdfVorschau} onClose={() => setPdfVorschau(null)} />}
     </div>
   );
 }
