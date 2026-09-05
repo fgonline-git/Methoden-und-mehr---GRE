@@ -8,6 +8,7 @@ import { Image as TiptapImage } from "@tiptap/extension-image";
 import { TextStyle } from "@tiptap/extension-text-style";
 import { Color } from "@tiptap/extension-color";
 import Placeholder from "@tiptap/extension-placeholder";
+import * as db from "./datenbank";
 // Word-Import/-Export für die Methodenbeschreibung ist (noch) nicht enthalten – die dafür
 // nötigen Zusatzbibliotheken laufen in dieser Vorschau-Umgebung nicht. Bei Bedarf im eigenen
 // Projekt ergänzbar (siehe frühere Chat-Nachrichten für den genauen Code).
@@ -1170,22 +1171,69 @@ function MethodCard({ planung, methode, onClick, onDragStart }) {
 
 // ---------- App ----------
 export default function App() {
-  const [initial] = useState(() => seedInitialerZustand());
-  const [faecher, setFaecher] = useState(initial.faecher);
-  const [lehrer, setLehrer] = useState(initial.lehrer);
-  const [klassen, setKlassen] = useState(initial.klassen);
-  const [lerngruppen, setLerngruppen] = useState(initial.lerngruppen);
-  const [methoden, setMethoden] = useState(seedMethoden());
-  const [planungen, setPlanungen] = useState(() => seedPlanungen(klassen, lerngruppen, methoden));
+  const [ladezustand, setLadezustand] = useState("laedt"); // 'laedt' | 'bereit' | 'fehler'
+  const [ladeFehler, setLadeFehler] = useState("");
+  const [datenquelle, setDatenquelle] = useState(null); // 'supabase' | 'lokal' (noch nicht nach Supabase übernommen)
 
-  const k8bId = (klassen.find((k) => k.jahrgang === 8 && k.buchstabe === "b") || {}).id || null;
+  const [faecher, setFaecher] = useState([]);
+  const [lehrer, setLehrer] = useState([]);
+  const [klassen, setKlassen] = useState([]);
+  const [lerngruppen, setLerngruppen] = useState([]);
+  const [methoden, setMethoden] = useState([]);
+  const [planungen, setPlanungen] = useState([]);
+
+  useEffect(() => {
+    let abgebrochen = false;
+    db.ladeAlleDaten()
+      .then((daten) => {
+        if (abgebrochen) return;
+        if (daten.klassen.length === 0) {
+          // Noch keine Migration durchgeführt (leere Supabase-Tabellen) - mit dem bisherigen
+          // lokalen Ausgangszustand starten, bis "In Supabase übernehmen" ausgeführt wurde.
+          const lokal = seedInitialerZustand();
+          setFaecher(lokal.faecher);
+          setLehrer(lokal.lehrer);
+          setKlassen(lokal.klassen);
+          setLerngruppen(lokal.lerngruppen);
+          setMethoden(seedMethoden());
+          setPlanungen([]);
+          setDatenquelle("lokal");
+          setSelectedKlasseId((lokal.klassen.find((k) => k.jahrgang === 8 && k.buchstabe === "b") || {}).id || null);
+        } else {
+          setFaecher(daten.faecher);
+          setLehrer(daten.lehrer);
+          setKlassen(daten.klassen);
+          setLerngruppen(daten.lerngruppen);
+          setMethoden(daten.methoden);
+          setPlanungen(daten.planungen);
+          setDatenquelle("supabase");
+          setSelectedKlasseId((daten.klassen.find((k) => k.jahrgang === 8 && k.buchstabe === "b") || daten.klassen[0] || {}).id || null);
+        }
+        setLadezustand("bereit");
+      })
+      .catch((err) => {
+        if (abgebrochen) return;
+        console.error("Laden aus Supabase fehlgeschlagen:", err);
+        setLadeFehler(err.message || String(err));
+        setLadezustand("fehler");
+      });
+    return () => {
+      abgebrochen = true;
+    };
+  }, []);
+
   const [mode, setMode] = useState("klasse"); // 'klasse' | 'lehrer' | 'verwaltung'
-  const [selectedKlasseId, setSelectedKlasseId] = useState(k8bId);
+  const [selectedKlasseId, setSelectedKlasseId] = useState(null);
   const [expanded, setExpanded] = useState({ 8: true });
   const [stammTab, setStammTab] = useState("faecher");
   const [sidebarOffen, setSidebarOffen] = useState(false); // nur auf schmalen Ansichten (iPad Hochformat) relevant
-  const [currentLehrerId, setCurrentLehrerId] = useState(lehrer[0]?.id || null);
+  const [currentLehrerId, setCurrentLehrerId] = useState(null);
   const [modalPlanungId, setModalPlanungId] = useState(null);
+
+  useEffect(() => {
+    if (lehrer.length && !currentLehrerId) setCurrentLehrerId(lehrer[0].id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lehrer]);
 
   // ----- lookups -----
   const fach = (id) => faecher.find((f) => f.id === id);
@@ -1209,34 +1257,64 @@ export default function App() {
   const [neuFach, setNeuFach] = useState({ name: "", kuerzel: "" });
   const addFach = () => {
     if (!neuFach.name || !neuFach.kuerzel) return;
-    setFaecher([...faecher, { id: uid("f"), ...neuFach }]);
+    const eingabe = neuFach;
+    const neu = { id: uid("f"), ...eingabe };
+    setFaecher([...faecher, neu]);
     setNeuFach({ name: "", kuerzel: "" });
+    if (datenquelle === "supabase") {
+      db.fachErstellen(eingabe)
+        .then((serverFach) => setFaecher((prev) => prev.map((f) => (f.id === neu.id ? serverFach : f))))
+        .catch((err) => console.error("Fach anlegen fehlgeschlagen:", err));
+    }
   };
 
   // ----- Stammdaten: Lehrer -----
   const [neuLehrer, setNeuLehrer] = useState({ name: "", kuerzel: "", email: "" });
   const addLehrer = () => {
     if (!neuLehrer.name || neuLehrer.kuerzel.length !== 3) return;
-    setLehrer([...lehrer, { id: uid("l"), ...neuLehrer }]);
+    const eingabe = neuLehrer;
+    const neu = { id: uid("l"), ...eingabe };
+    setLehrer([...lehrer, neu]);
     setNeuLehrer({ name: "", kuerzel: "", email: "" });
+    if (datenquelle === "supabase") {
+      db.lehrerErstellen(eingabe)
+        .then((serverLehrer) => setLehrer((prev) => prev.map((l) => (l.id === neu.id ? serverLehrer : l))))
+        .catch((err) => console.error("Lehrkraft anlegen fehlgeschlagen:", err));
+    }
   };
 
   // ----- Stammdaten: Klassen -----
-  const updateKlasse = (id, patch) => setKlassen(klassen.map((k) => (k.id === id ? { ...k, ...patch } : k)));
+  const updateKlasse = (id, patch) => {
+    setKlassen(klassen.map((k) => (k.id === id ? { ...k, ...patch } : k)));
+    if (datenquelle === "supabase") {
+      db.klasseAktualisieren(id, patch).catch((err) => console.error("Klasse aktualisieren fehlgeschlagen:", err));
+    }
+  };
   const [neuKlasse, setNeuKlasse] = useState({ jahrgang: 5, buchstabe: "a" });
   const addKlasse = () => {
-    setKlassen([
-      ...klassen,
-      { id: uid("k"), jahrgang: Number(neuKlasse.jahrgang), buchstabe: neuKlasse.buchstabe, lehrer1: null, lehrer2: null, vorgaenger: null },
-    ]);
+    const eingabe = { jahrgang: Number(neuKlasse.jahrgang), buchstabe: neuKlasse.buchstabe, lehrer1: null, lehrer2: null };
+    const neu = { id: uid("k"), ...eingabe, vorgaenger: null };
+    setKlassen([...klassen, neu]);
+    if (datenquelle === "supabase") {
+      db.klasseErstellen(eingabe)
+        .then((serverKlasse) => setKlassen((prev) => prev.map((k) => (k.id === neu.id ? serverKlasse : k))))
+        .catch((err) => console.error("Klasse anlegen fehlgeschlagen:", err));
+    }
   };
 
   // ----- Stammdaten: Lerngruppen -----
   const [neuLg, setNeuLg] = useState({ fachId: "f1", bezeichnung: "", jahrgang: 5, lehrerId: "", klassenIds: [] });
   const addLerngruppe = () => {
     if (!neuLg.bezeichnung || !neuLg.lehrerId) return;
-    setLerngruppen([...lerngruppen, { id: uid("lg"), ...neuLg, jahrgang: Number(neuLg.jahrgang) }]);
+    const eingabe = { ...neuLg, jahrgang: Number(neuLg.jahrgang) };
+    const neu = { id: uid("lg"), ...eingabe };
+    setLerngruppen([...lerngruppen, neu]);
     setNeuLg({ fachId: "f1", bezeichnung: "", jahrgang: 5, lehrerId: "", klassenIds: [] });
+    if (datenquelle === "supabase") {
+      db.lerngruppeErstellen(eingabe)
+        .then((serverGruppe) => setLerngruppen((prev) => prev.map((g) => (g.id === neu.id ? serverGruppe : g))))
+        .catch((err) => console.error("Lerngruppe anlegen fehlgeschlagen:", err));
+    }
   };
   const toggleKlasseInNeuLg = (kid) => {
     setNeuLg((s) => ({
@@ -1249,16 +1327,24 @@ export default function App() {
     const g = lerngruppen.find((x) => x.id === id);
     setLerngruppenSicherung({ zustand: lerngruppen, beschreibung: `Lehrerwechsel bei "${g?.bezeichnung || ""}"` });
     setLerngruppen((prev) => prev.map((x) => (x.id === id ? { ...x, ...patch } : x)));
+    if (datenquelle === "supabase") {
+      db.lerngruppeAktualisieren(id, patch).catch((err) => console.error("Lerngruppe aktualisieren fehlgeschlagen:", err));
+    }
   };
   const removeLerngruppe = (id) => {
     const g = lerngruppen.find((x) => x.id === id);
     setLerngruppenSicherung({ zustand: lerngruppen, beschreibung: `Löschen von "${g?.bezeichnung || ""}"` });
     setLerngruppen((prev) => prev.filter((x) => x.id !== id));
+    if (datenquelle === "supabase") {
+      db.lerngruppeLoeschen(id).catch((err) => console.error("Lerngruppe löschen fehlgeschlagen:", err));
+    }
   };
   const undoLerngruppenAenderung = () => {
     if (!lerngruppenSicherung) return;
     setLerngruppen(lerngruppenSicherung.zustand);
     setLerngruppenSicherung(null);
+    // Absichtlich kein Supabase-Rückgängig: "Rückgängig" wirkt bewusst nur lokal/sofort;
+    // die vorherige Datenbank-Änderung müsste sonst erneut nachvollzogen werden.
   };
   const verwirfLerngruppenSicherung = () => setLerngruppenSicherung(null);
 
@@ -1267,17 +1353,33 @@ export default function App() {
   const [neuMethodeKey, setNeuMethodeKey] = useState(0);
   const addMethode = () => {
     if (!neuMethode.name || neuMethode.faecherIds.length === 0 || neuMethode.jahrgaenge.length === 0) return;
-    setMethoden([...methoden, { id: uid("m"), materialien: [], links: [], ...neuMethode }]);
+    const eingabe = { materialien: [], links: [], ...neuMethode };
+    const neu = { id: uid("m"), ...eingabe };
+    setMethoden([...methoden, neu]);
     setNeuMethode({ name: "", beschreibung: "", faecherIds: [], jahrgaenge: [], halbjahr: 1 });
     setNeuMethodeKey((k) => k + 1); // erzwingt Reset des unkontrollierten Rich-Text-Felds
+    if (datenquelle === "supabase") {
+      db.methodeErstellen(eingabe)
+        .then((serverMethode) => setMethoden((prev) => prev.map((m) => (m.id === neu.id ? serverMethode : m))))
+        .catch((err) => console.error("Methode anlegen fehlgeschlagen:", err));
+    }
   };
   const toggleInList = (list, val) => (list.includes(val) ? list.filter((x) => x !== val) : [...list, val]);
-  const updateMethode = (id, patch) => setMethoden((prev) => prev.map((m) => (m.id === id ? { ...m, ...patch } : m)));
+  const updateMethode = (id, patch) => {
+    setMethoden((prev) => prev.map((m) => (m.id === id ? { ...m, ...patch } : m)));
+    if (datenquelle === "supabase") {
+      db.methodeAktualisieren(id, patch).catch((err) => console.error("Methode aktualisieren fehlgeschlagen:", err));
+    }
+  };
   // Löschen einer Methode kaskadiert auf ihre Planungen (Zeitleisten-Zuordnungen) - sonst
-  // blieben dort tote Verweise auf eine nicht mehr existierende Methode zurück.
+  // blieben dort tote Verweise auf eine nicht mehr existierende Methode zurück. Bei einer
+  // echten Datenbank übernimmt das "on delete cascade" im Schema automatisch mit.
   const removeMethode = (id) => {
     setMethoden((prev) => prev.filter((m) => m.id !== id));
     setPlanungen((prev) => prev.filter((p) => p.methodeId !== id));
+    if (datenquelle === "supabase") {
+      db.methodeLoeschen(id).catch((err) => console.error("Methode löschen fehlgeschlagen:", err));
+    }
   };
 
   // ----- Planung (Zuordnung + Durchführung in einem) -----
@@ -1305,26 +1407,43 @@ export default function App() {
   };
 
   const platziereMethode = (klasseId, methodeId, lerngruppeId, quartal) => {
-    setPlanungen((prev) => [
-      ...prev,
-      { id: uid("p"), methodeId, lerngruppeId, klasseId, quartal, status: "ausstehend", datum: null, notiz: "" },
-    ]);
+    const eingabe = { methodeId, lerngruppeId, klasseId, quartal, status: "ausstehend", datum: null, notiz: "" };
+    const neu = { id: uid("p"), ...eingabe };
+    setPlanungen((prev) => [...prev, neu]);
+    if (datenquelle === "supabase") {
+      db.planungErstellen(eingabe)
+        .then((serverPlanung) => setPlanungen((prev) => prev.map((p) => (p.id === neu.id ? serverPlanung : p))))
+        .catch((err) => console.error("Planung anlegen fehlgeschlagen:", err));
+    }
   };
 
-  const updatePlanung = (id, patch) => setPlanungen((prev) => prev.map((p) => (p.id === id ? { ...p, ...patch } : p)));
+  const updatePlanung = (id, patch) => {
+    setPlanungen((prev) => prev.map((p) => (p.id === id ? { ...p, ...patch } : p)));
+    if (datenquelle === "supabase") {
+      db.planungAktualisieren(id, patch).catch((err) => console.error("Planung aktualisieren fehlgeschlagen:", err));
+    }
+  };
   const removePlanung = (id) => {
     setPlanungen((prev) => prev.filter((p) => p.id !== id));
     setModalPlanungId(null);
+    if (datenquelle === "supabase") {
+      db.planungLoeschen(id).catch((err) => console.error("Planung löschen fehlgeschlagen:", err));
+    }
   };
 
   const setzeStatus = (id, status) => {
+    let neuesDatum;
     setPlanungen((prev) =>
       prev.map((p) => {
         if (p.id !== id) return p;
         const datum = status === "erledigt" ? p.datum || new Date().toISOString().slice(0, 10) : p.datum;
+        neuesDatum = datum;
         return { ...p, status, datum };
       })
     );
+    if (datenquelle === "supabase") {
+      db.planungAktualisieren(id, { status, datum: neuesDatum }).catch((err) => console.error("Status aktualisieren fehlgeschlagen:", err));
+    }
   };
 
   // ----- Drag & Drop -----
@@ -1376,9 +1495,61 @@ export default function App() {
     setManuell({ methodeId: "", lerngruppeId: "", quartal: 1 });
   };
 
+  // ----- Einmalige Migration nach Supabase -----
+  const [migrationLaeuft, setMigrationLaeuft] = useState(false);
+  const [migrationFortschritt, setMigrationFortschritt] = useState("");
+  const [migrationFehler, setMigrationFehler] = useState("");
+  const migriereNachSupabase = async () => {
+    setMigrationLaeuft(true);
+    setMigrationFehler("");
+    try {
+      await db.allesNachSupabaseHochladen({ faecher, lehrer, klassen, lerngruppen, methoden, planungen }, setMigrationFortschritt);
+      const daten = await db.ladeAlleDaten();
+      setFaecher(daten.faecher);
+      setLehrer(daten.lehrer);
+      setKlassen(daten.klassen);
+      setLerngruppen(daten.lerngruppen);
+      setMethoden(daten.methoden);
+      setPlanungen(daten.planungen);
+      setDatenquelle("supabase");
+    } catch (err) {
+      console.error("Migration nach Supabase fehlgeschlagen:", err);
+      setMigrationFehler(err.message || String(err));
+    } finally {
+      setMigrationLaeuft(false);
+      setMigrationFortschritt("");
+    }
+  };
+
   const modalPlanung = modalPlanungId ? planungen.find((p) => p.id === modalPlanungId) : null;
 
   // ---------- Render ----------
+  if (ladezustand === "laedt") {
+    return (
+      <div className="min-h-screen flex items-center justify-center" style={{ background: T.paper, color: T.muted }}>
+        <style>{FONTS}</style>
+        <p className="mc-body text-sm">Daten werden geladen…</p>
+      </div>
+    );
+  }
+  if (ladezustand === "fehler") {
+    return (
+      <div className="min-h-screen flex items-center justify-center p-8" style={{ background: T.paper }}>
+        <style>{FONTS}</style>
+        <div className="max-w-md rounded-xl border p-6 bg-white" style={{ borderColor: T.danger }}>
+          <div className="mc-display text-lg font-semibold mb-2" style={{ color: T.danger }}>
+            Verbindung zu Supabase fehlgeschlagen
+          </div>
+          <p className="text-sm mb-1" style={{ color: T.ink }}>
+            {ladeFehler}
+          </p>
+          <p className="text-xs" style={{ color: T.muted }}>
+            Prüfe die Adresse und den Schlüssel in src/supabaseClient.js sowie die Zugriffsregeln (RLS) in Supabase.
+          </p>
+        </div>
+      </div>
+    );
+  }
   return (
     <div className="mc-body min-h-screen flex" style={{ background: T.paper, color: T.ink }}>
       <style>{FONTS}</style>
@@ -1548,6 +1719,7 @@ export default function App() {
               neuLg, setNeuLg, addLerngruppe, toggleKlasseInNeuLg, updateLerngruppe, removeLerngruppe,
               lerngruppenSicherung, undoLerngruppenAenderung, verwirfLerngruppenSicherung,
               neuMethode, setNeuMethode, addMethode, toggleInList, updateMethode, removeMethode, neuMethodeKey,
+              datenquelle, migriereNachSupabase, migrationLaeuft, migrationFortschritt, migrationFehler,
             }}
           />
         )}
@@ -2145,6 +2317,7 @@ function VerwaltungView(props) {
     neuLg, setNeuLg, addLerngruppe, toggleKlasseInNeuLg, updateLerngruppe, removeLerngruppe,
     lerngruppenSicherung, undoLerngruppenAenderung, verwirfLerngruppenSicherung,
     neuMethode, setNeuMethode, addMethode, toggleInList, updateMethode, removeMethode, neuMethodeKey,
+    datenquelle, migriereNachSupabase, migrationLaeuft, migrationFortschritt, migrationFehler,
   } = props;
 
   const fach = (id) => faecher.find((f) => f.id === id);
@@ -2370,6 +2543,27 @@ function VerwaltungView(props) {
       <p className="text-sm mb-5" style={{ color: T.muted }}>
         Stammdaten der Plattform – künftig teilweise aus IServ/Untis importierbar.
       </p>
+
+      {datenquelle === "lokal" && (
+        <div className="rounded-xl border p-4 mb-5" style={{ borderColor: T.accent, background: T.accentSoft }}>
+          <div className="mc-display text-sm font-semibold mb-1" style={{ color: "#7A5518" }}>
+            Noch nicht mit Supabase verbunden
+          </div>
+          <p className="text-xs mb-3" style={{ color: "#7A5518" }}>
+            Aktuell läuft die App noch mit dem lokalen Ausgangszustand (nichts wird beim Neuladen gespeichert). Mit
+            einem Klick lässt sich der komplette aktuelle Stand einmalig nach Supabase hochladen – danach lädt die
+            App bei jedem Start automatisch von dort und alle Änderungen werden dauerhaft gespeichert.
+          </p>
+          <Button tone="accent" onClick={migriereNachSupabase} disabled={migrationLaeuft}>
+            {migrationLaeuft ? `Übertrage… ${migrationFortschritt}` : "Jetzt einmalig nach Supabase übernehmen"}
+          </Button>
+          {migrationFehler && (
+            <p className="text-xs mt-2" style={{ color: T.danger }}>
+              Fehlgeschlagen: {migrationFehler}
+            </p>
+          )}
+        </div>
+      )}
 
       <div className="flex gap-1 mb-5 flex-wrap">
         {[

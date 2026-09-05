@@ -62,6 +62,24 @@ aktualisiert sich automatisch.
   - Das Herunterladen der CSV-Exporte (iOS zeigt dafür meist einen
     "In Dateien sichern"-Dialog statt eines klassischen Downloads)
 
+## Anbindung an Supabase (echte Datenspeicherung)
+
+Die App ist mit [Supabase](https://supabase.com) verbunden (Adresse und Schlüssel in
+`src/supabaseClient.js`). Beim ersten Start nach Einrichtung der Datenbank ist diese
+noch leer – die App läuft dann übergangsweise mit dem bisherigen lokalen
+Ausgangszustand weiter (nichts wird gespeichert). Oben in der **Verwaltung** erscheint
+in diesem Fall ein Hinweis mit dem Knopf **"Jetzt einmalig nach Supabase übernehmen"** –
+danach lädt die App bei jedem Start automatisch aus Supabase, und alle Änderungen
+werden dauerhaft gespeichert.
+
+Die Datenbank-Struktur dafür liegt in `supabase-schema.sql` (im SQL-Editor des
+Supabase-Dashboards einmalig ausführen).
+
+**Noch nicht mit Supabase verbunden:** der Untis-CSV-Import und der Methoden-JSON-
+Import/Export – beide wirken bisher nur auf den lokalen Zustand im Browser. Nach einem
+Neuladen (sofern bereits mit Supabase verbunden) wären damit importierte Änderungen
+verloren, sofern nicht zusätzlich der Migrations-Knopf erneut genutzt wird.
+
 ## Bekannte Einschränkungen
 
 - **Daten sind nicht dauerhaft gespeichert.** Alles läuft im Arbeitsspeicher des
@@ -76,7 +94,18 @@ aktualisiert sich automatisch.
   im Text verschieben.
 - **Bearbeitung bestehender Methoden**: Name, Jahrgangsstufen, empfohlene Fächer und
   Halbjahr lassen sich in der Methoden-Verwaltung direkt ändern; Materialien
-  (Arbeitsblätter etc.) lassen sich hochladen und wieder entfernen.
+  (Arbeitsblätter etc.) lassen sich hochladen und wieder entfernen. Für PDF-Materialien
+  gibt es eine eingebettete Vorschau (Klick auf den Dateinamen), andere Dateitypen
+  werden direkt heruntergeladen. Zusätzlich lassen sich Web-Links hinterlegen.
+- **Methoden exportieren/importieren (JSON)**: Solange es noch keine echte Datenbank
+  gibt, lässt sich damit trotzdem schon mit echten Methoden arbeiten, ohne bei jedem
+  Neuladen von vorne anzufangen. Jede Methoden-Karte hat einen "Export"-Knopf für eine
+  einzelne Datei; oben in der Methoden-Übersicht gibt es "Alle exportieren" für den
+  kompletten Satz sowie "Importieren" (erkennt automatisch, ob eine einzelne Methode
+  oder ein kompletter Satz hochgeladen wird – eine einzelne Methode wird ergänzt, ein
+  kompletter Satz ersetzt die aktuelle Liste). Fächer werden dabei über ihr Kürzel
+  zugeordnet, nicht über die interne ID, damit der Import auch nach einem Neuladen der
+  Seite (bei dem sich die internen IDs ändern) noch funktioniert.
 - **Eingebetteter Testdatensatz:** `src/App.jsx` enthält aktuell testweise einen
   kompletten Untis-CSV-Export als Text im Code (`STANDARD_UNTIS_EXPORT`), der beim
   Start automatisch geladen wird. Das ist bewusst nur eine Übergangslösung für die
