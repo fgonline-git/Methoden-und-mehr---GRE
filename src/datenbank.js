@@ -18,6 +18,17 @@ const planungAusDb = (r) => ({ id: r.id, methodeId: r.methode_id, lerngruppeId: 
 const planungZuDb = (p) => ({ methode_id: p.methodeId, lerngruppe_id: p.lerngruppeId, klasse_id: p.klasseId || null, quartal: p.quartal, status: p.status, datum: p.datum || null, notiz: p.notiz || "" });
 
 // ---------------------------------------------------------------------------
+// Prüft, ob überhaupt schon Daten in Supabase liegen (Kurz-Check anhand der
+// Fächer-Tabelle) - verhindert einen erneuten Migrationsversuch in eine bereits
+// (ganz oder teilweise) befüllte Datenbank, was sonst zu Duplikat-Fehlern führt.
+// ---------------------------------------------------------------------------
+export async function supabaseIstLeer() {
+  const { count, error } = await supabase.from("faecher").select("id", { count: "exact", head: true });
+  if (error) throw error;
+  return count === 0;
+}
+
+// ---------------------------------------------------------------------------
 // Laden
 // ---------------------------------------------------------------------------
 export async function ladeAlleDaten() {

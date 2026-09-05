@@ -1503,6 +1503,14 @@ export default function App() {
     setMigrationLaeuft(true);
     setMigrationFehler("");
     try {
+      const leer = await db.supabaseIstLeer();
+      if (!leer) {
+        setMigrationFehler(
+          "In Supabase liegen bereits Daten (z.B. Rest eines vorherigen, abgebrochenen Versuchs). " +
+            "Bitte erst die Tabellen leeren (siehe supabase-reset.sql) und dann erneut versuchen."
+        );
+        return;
+      }
       await db.allesNachSupabaseHochladen({ faecher, lehrer, klassen, lerngruppen, methoden, planungen }, setMigrationFortschritt);
       const daten = await db.ladeAlleDaten();
       setFaecher(daten.faecher);
